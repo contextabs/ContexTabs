@@ -1,5 +1,21 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "jsx": "react-jsx", "baseUrl": ".", "paths": { "~/*": ["./*"] }, "types": ["chrome"] },
-  "include": ["**/*.ts", "**/*.tsx", "../../packages/**/*.ts"]
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "~/*": [
+        "./*"
+      ]
+    },
+    "types": [
+      "chrome"
+    ]
+  },
+  "include": [
+    ".plasmo/index.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    "../../packages/**/*.ts"
+  ]
 }

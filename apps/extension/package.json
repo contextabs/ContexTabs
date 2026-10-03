@@ -1,9 +1,22 @@
 {
-  "name": "@ambient/extension", "private": true,
+  "name": "@ambient/extension",
+  "version": "0.0.1",
+  "description": "Ambient context browser extension",
+  "private": true,
   "scripts": { "dev": "plasmo dev --target=chrome-mv3", "build": "plasmo build --target=chrome-mv3" },
   "manifest": {
-    "permissions": ["storage", "tabs"], "optional_permissions": ["tabGroups"],
-    "host_permissions": ["http://*/*", "https://*/*", "http://localhost:8787/*", "http://127.0.0.1:8787/*"]
+    "name": "Ambient Context",
+    "version": "0.0.1",
+    "description": "Ambient context browser extension",
+    "permissions": ["storage", "tabs"],
+    "optional_permissions": ["tabGroups"],
+    "host_permissions": ["http://*/*", "https://*/*", "http://localhost:8787/*", "http://127.0.0.1:8787/*"],
+    "icons": {
+      "16": "../assets/icon.png",
+      "32": "../assets/icon.png",
+      "48": "../assets/icon.png",
+      "128": "../assets/icon.png"
+    }
   },
   "dependencies": { "@ambient/contracts": "workspace:*", "idb": "^8.0.2", "plasmo": "^0.90.5", "react": "^18.3.1", "react-dom": "^18.3.1" },
   "devDependencies": { "@types/chrome": "^0.0.306", "@types/react": "^18.3.18", "@types/react-dom": "^18.3.5", "typescript": "^5.8.3" }

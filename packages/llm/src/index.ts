@@ -1,8 +1,15 @@
 import { GoogleGenAI, type Schema } from "@google/genai";
 
+const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+if (!geminiApiKey) {
+  throw new Error(
+    "GEMINI_API_KEY is required. Copy apps/api/.env.example to apps/api/.env and add your Gemini API key before running the API."
+  );
+}
+
 const filterModel = process.env.GEMINI_FILTER_MODEL ?? "gemini-3.5-flash";
 const answerModel = process.env.GEMINI_ANSWER_MODEL ?? "gemini-3.1-pro-preview";
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
 const filterSchema: Schema = {
   type: "OBJECT",
