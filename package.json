@@ -1,0 +1,12 @@
+{
+  "name": "stormhacks-ambient-context",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev:extension": "pnpm --filter @ambient/extension dev",
+    "build:extension": "pnpm --filter @ambient/extension build",
+    "dev:api": "pnpm --filter @ambient/api dev",
+    "build:api": "pnpm --filter @ambient/api build"
+  },
+  "devDependencies": { "typescript": "^5.8.3" }
+}

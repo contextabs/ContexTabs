@@ -1,0 +1,7 @@
+node_modules
+dist
+.plasmo
+.env
+.env.*
+!.env.example
+*.log
