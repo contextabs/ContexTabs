@@ -1,4 +1,4 @@
 {
   "name": "@ambient/contracts", "version": "0.1.0", "private": true, "type": "module",
-  "exports": { ".": "./src/index.ts" }, "dependencies": { "zod": "^3.24.2" }
+  "exports": { ".": "./src/index.ts" }, "dependencies": { "zod": "3.24.2" }
 }
