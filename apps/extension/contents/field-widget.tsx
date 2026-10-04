@@ -1,5 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AssistResponseSchema, type ContextPayload, type MemoryItem, type ResearchSession } from "@ambient/contracts";
 import { getSession, saveMemory, saveSession } from "../lib/local-store";
 import { collectTabs, type ContextTab } from "../lib/tabs";
@@ -80,8 +80,10 @@ const acceptedPrompts = new WeakMap<Editable, string>();
 function Widget({ field, close }: { field: Editable; close: () => void }) {
   const [state, setState] = useState<"idle" | "working" | "suggestion" | "clarification">("idle");
   const [result, setResult] = useState<AssistResult | null>(null);
-  const [draft, setDraft] = useState(readField(field));
   const [clarification, setClarification] = useState("");
+  const [, refreshPanelLayout] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const clarificationInputRef = useRef<HTMLTextAreaElement>(null);
   const requestRef = useRef<AbortController | null>(null);
   const versionRef = useRef(0);
   const timerRef = useRef<number | undefined>();
@@ -89,14 +91,30 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
   const autoStartedTextRef = useRef("");
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => {
+    if (state === "clarification") clarificationInputRef.current?.focus();
+  }, [state, result]);
 
   const panelStyle = () => {
     const rect = field.getBoundingClientRect();
-    const panelHeight = 255;
-    const below = rect.bottom + 8;
-    const top = below + panelHeight <= innerHeight ? below : Math.max(8, rect.top - panelHeight - 8);
-    return { left: `${Math.max(8, Math.min(rect.left, innerWidth - 396))}px`, top: `${top}px` };
+    const panelWidth = Math.min(rect.width, innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, innerWidth - panelWidth - 8));
+    const panelHeight = panelRef.current?.getBoundingClientRect().height ?? 0;
+    const gap = 16;
+    const maxHeight = Math.max(0, rect.top - gap - 12);
+    const height = Math.min(panelHeight, maxHeight);
+    const top = Math.max(8, rect.top - height - gap);
+    return { left: `${left}px`, top: `${top}px`, width: `${panelWidth}px`, maxHeight: `${maxHeight}px` };
   };
+
+  useLayoutEffect(() => {
+    if (!panelRef.current) return;
+    const updateLayout = () => refreshPanelLayout((value) => value + 1);
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(panelRef.current);
+    window.addEventListener("resize", updateLayout);
+    return () => { observer.disconnect(); window.removeEventListener("resize", updateLayout); };
+  }, [state, result]);
   const cancel = () => { requestRef.current?.abort(); requestRef.current = null; if (timerRef.current) clearTimeout(timerRef.current); };
   const dismiss = () => { cancel(); versionRef.current++; setResult(null); setClarification(""); setState("idle"); };
 
@@ -107,7 +125,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
     cancel();
     const version = ++versionRef.current;
     const controller = new AbortController(); requestRef.current = controller;
-    setDraft(query); setResult(null); setState("working");
+    setResult(null); setState("working");
     try {
       const [tabs, stored, active] = await Promise.all([
         collectTabs(query), chrome.storage.local.get<{ "approved-memory"?: MemoryItem[] }>("approved-memory"),
@@ -166,12 +184,13 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       <button className={`launcher ${state === "working" ? "working" : state === "suggestion" || state === "clarification" ? "ready" : ""}`} title={state === "working" ? "Cancel refinement" : state === "suggestion" ? "Review optimized prompt" : "Refine prompt now"} aria-label={state === "working" ? "Cancel refinement" : "Refine prompt now"} onClick={() => state === "idle" ? void refine() : dismiss()}>{state === "working" ? "…" : "✦"}</button>
       {(state === "working" || state === "suggestion" || state === "clarification") && <span className={`launcher-label ${state}`}>{state === "working" ? "Refining…" : state === "suggestion" ? "Review rewrite" : "Question"}</span>}
     </div>
-    {(state === "suggestion" || state === "clarification") && <div className="panel" style={panelStyle()}>
+    {(state === "suggestion" || state === "clarification") && <div ref={panelRef} className="panel" style={panelStyle()}>
       <button className="close" aria-label="Close suggestion" onClick={dismiss}>×</button>
-      {state === "suggestion" && <><div className="label">Optimized prompt</div><div className="original">{draft}</div><button className="optimized" onClick={() => { acceptedPrompts.set(field, optimized.trim()); insertText(field, optimized, true); close(); }}>{optimized}</button><div className="hint">Click the optimized prompt to use it.</div></>}
-      {state === "clarification" && <><div className="label">One detail will improve this</div><div className="question">{result?.status === "clarification_required" ? result.filter.clarifyingQuestion : ""}</div><textarea value={clarification} onChange={(event) => setClarification(event.target.value)} placeholder="Your answer" /><button className="primary" disabled={!clarification.trim()} onClick={() => void refine(clarification.trim())}>Continue</button></>}
+      {state === "suggestion" && <><div className="optimized-title">Optimized prompt</div><button className="optimized" aria-label="Use optimized prompt" onClick={() => { acceptedPrompts.set(field, optimized.trim()); insertText(field, optimized, true); close(); }}>{optimized}</button></>}
+      {state === "clarification" && <><div className="label">One detail will improve this</div><div className="question">{result?.status === "clarification_required" ? result.filter.clarifyingQuestion : ""}</div><div className="clarification-entry"><textarea ref={clarificationInputRef} autoFocus value={clarification} onChange={(event) => setClarification(event.target.value)} onPointerDown={(event) => { event.stopPropagation(); clarificationInputRef.current?.focus(); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (clarification.trim()) void refine(clarification.trim()); } }} placeholder="Your answer" aria-label="Answer the clarification question" /><button className="primary" disabled={!clarification.trim()} onClick={() => void refine(clarification.trim())}>Continue</button></div></>}
     </div>}
-    <style>{`*{box-sizing:border-box}.launcher-wrap{position:relative;width:34px;height:34px}.launcher{width:34px;height:34px;border:0;border-radius:50%;background:#6750a4;color:#fff;font:18px system-ui;box-shadow:0 2px 8px #0004;cursor:pointer}.launcher.working{animation:pulse 1s infinite;background:#8a72c1}.launcher.ready{background:#3b7d4b;box-shadow:0 0 0 4px #3b7d4b33}@keyframes pulse{50%{transform:scale(1.1)}}.launcher-label{position:absolute;left:40px;top:5px;white-space:nowrap;border:1px solid #ffffff40;border-radius:12px;padding:4px 9px;background:#302a38e8;color:#fff;font:600 11px/1.2 system-ui,sans-serif;box-shadow:0 2px 7px #0003;pointer-events:none}.launcher-label.working{background:#514564ed}.launcher-label.suggestion{background:#315c40ed}.panel{position:fixed;z-index:2147483647;width:min(380px,calc(100vw - 16px));max-height:300px;overflow:auto;scrollbar-width:none;background:rgba(37,31,47,.9);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#f8f5fc;border:1px solid #ffffff30;border-radius:14px;box-shadow:0 9px 30px #0004;padding:14px;font:13px/1.45 system-ui,sans-serif}.panel::-webkit-scrollbar,.original::-webkit-scrollbar{display:none}.panel button{font:600 12px/1.3 system-ui,sans-serif}.close{position:absolute;right:9px;top:7px;width:27px;height:27px;border:1px solid #ffffff35;border-radius:50%;background:#ffffff15;color:#fff;font-size:20px!important;line-height:20px;cursor:pointer}.label{font-weight:700;margin-bottom:9px;padding-right:30px;color:#fff}.original{padding:9px;background:#ffffff10;border:1px solid #ffffff20;border-radius:8px;color:#ddd6e5;white-space:pre-wrap;max-height:70px;overflow:auto;scrollbar-width:none}.optimized{display:block;width:100%;margin-top:8px;text-align:left;border:1px solid #c2a9f7;border-radius:8px;background:#8061b733;padding:9px;color:#fff;white-space:pre-wrap;cursor:pointer}.optimized:hover{background:#9275ca66;border-color:#e0d1ff}.hint{font-size:11px;color:#cbc4d3;margin-top:6px}.question{font-weight:600;margin:8px 0 10px;color:#fff}textarea{width:100%;min-height:56px;border:1px solid #ffffff40;border-radius:8px;padding:8px;color:#fff;background:#ffffff14;font:13px/1.4 system-ui,sans-serif}textarea::placeholder{color:#c9c1d1}.primary{margin-top:8px;border:1px solid #c2a9f7;border-radius:8px;background:#8061b7;color:#fff;padding:8px 12px;cursor:pointer}.primary:hover{background:#9275ca}.primary:disabled{opacity:.5;cursor:not-allowed}`}</style>
+    <style>{`*{box-sizing:border-box}.launcher-wrap{position:relative;width:34px;height:34px}.launcher{width:34px;height:34px;border:0;border-radius:50%;background:#6750a4;color:#fff;font:18px system-ui;box-shadow:0 2px 8px #0004;cursor:pointer}.launcher.working{animation:pulse 1s infinite;background:#8a72c1}.launcher.ready{background:#3b7d4b;box-shadow:0 0 0 4px #3b7d4b33}@keyframes pulse{50%{transform:scale(1.1)}}.launcher-label{position:absolute;left:40px;top:5px;white-space:nowrap;border:1px solid #ffffff40;border-radius:12px;padding:4px 9px;background:#302a38e8;color:#fff;font:600 11px/1.2 system-ui,sans-serif;box-shadow:0 2px 7px #0003;pointer-events:none}.launcher-label.working{background:#514564ed}.launcher-label.suggestion{background:#315c40ed}.panel{position:fixed;z-index:2147483647;max-width:calc(100vw - 16px);max-height:300px;overflow:auto;scrollbar-width:none;background:rgba(37,31,47,.9);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#f8f5fc;border:1px solid #ffffff30;border-radius:14px;box-shadow:0 9px 30px #0004;padding:14px;font:13px/1.45 system-ui,sans-serif}.panel::-webkit-scrollbar{display:none}.panel button{font:600 12px/1.3 system-ui,sans-serif}.close{position:absolute;right:8px;top:8px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:1px solid #ffffff35;border-radius:50%;background:#ffffff15;color:#fff;font-size:17px!important;line-height:1;padding:0;cursor:pointer}.optimized{display:block;width:100%;margin-top:18px;text-align:left;border:1px solid #c2a9f7;border-radius:8px;background:#8061b733;padding:10px;color:#fff;white-space:pre-wrap;cursor:pointer}.optimized:hover{background:#9275ca66;border-color:#e0d1ff}.question{font-weight:600;margin:8px 0 10px;color:#fff}textarea{width:100%;min-height:56px;border:1px solid #ffffff40;border-radius:8px;padding:8px;color:#fff;background:#ffffff14;font:13px/1.4 system-ui,sans-serif}textarea::placeholder{color:#c9c1d1}.primary{margin-top:8px;border:1px solid #c2a9f7;border-radius:8px;background:#8061b7;color:#fff;padding:8px 12px;cursor:pointer}.primary:hover{background:#9275ca}.primary:disabled{opacity:.5;cursor:not-allowed}`}</style>
+    <style>{`.launcher-wrap{width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px}.launcher{width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px;font-size:16px}.launcher-label{left:${LAUNCHER_SIZE + 6}px;top:3px}.panel,.panel *{pointer-events:auto}.optimized-title{font-weight:700;color:#fff;padding:1px 34px 0 2px}.clarification-entry{display:flex;align-items:stretch;gap:8px}.clarification-entry textarea{flex:1;min-width:0;min-height:42px;resize:vertical}.clarification-entry .primary{flex:none;align-self:stretch;margin-top:0}`}</style>
   </>;
 }
 
@@ -181,23 +200,35 @@ let activeField: Editable | null = null;
 let hideTimer: number | undefined;
 let expandedWidget = false;
 
+// Adjust these to tune the floating launcher relative to the chat box.
+const LAUNCHER_SIZE = 28; // button diameter, in pixels
+const LAUNCHER_TOP_INSET = -2; // vertical offset from the textbox top; lower this to move up
+const LAUNCHER_RIGHT_INSET = 58; // distance from the textbox's right edge; raise to move left
+
 function positionHost(field: Editable, expanded = false) {
   if (!host) return;
   const rect = field.getBoundingClientRect();
   expandedWidget = expanded;
-  const width = expanded ? 350 : 40;
+  const width = expanded ? 350 : LAUNCHER_SIZE;
   host.style.width = `${width}px`;
   host.style.height = expanded ? "auto" : "40px";
-  host.style.left = `${Math.max(8, Math.min(rect.right - 34, window.innerWidth - width - 8))}px`;
-  host.style.top = `${Math.max(8, Math.min(rect.top + 6, window.innerHeight - (expanded ? 490 : 48)))}px`;
+  // Keep the launcher inside the field near its upper edge, clear of controls
+  // grouped on its right side.
+  host.style.left = `${Math.max(8, Math.min(rect.right - LAUNCHER_RIGHT_INSET, window.innerWidth - width - 8))}px`;
+  host.style.top = `${Math.max(8, Math.min(rect.top + LAUNCHER_TOP_INSET, window.innerHeight - (expanded ? 490 : 48)))}px`;
 }
 
 function mountWidget(field: Editable) {
+  if (!isAiPromptField(field)) {
+    activeField = null;
+    if (host) host.style.display = "none";
+    return;
+  }
   activeField = field;
   expandedWidget = false;
   if (!host) {
     host = document.createElement("div");
-    host.style.cssText = "position:fixed;z-index:2147483647;width:40px;height:40px;pointer-events:none;overflow:visible";
+    host.style.cssText = "position:fixed;z-index:2147483647;width:40px;height:40px;pointer-events:auto;overflow:visible";
     document.documentElement.append(host);
     const shadow = host.attachShadow({ mode: "open" });
     const mountPoint = document.createElement("div");
@@ -215,12 +246,21 @@ function Launcher({ field }: { field: Editable }) {
 }
 
 document.addEventListener("focusin", (event) => {
+  if (host && event.composedPath().includes(host)) {
+    if (hideTimer) window.clearTimeout(hideTimer);
+    return;
+  }
   if (!isEditable(event.target)) return;
+  if (!isAiPromptField(event.target)) {
+    if (host) host.style.display = "none";
+    return;
+  }
   if (hideTimer) window.clearTimeout(hideTimer);
   mountWidget(event.target);
 }, true);
 
 document.addEventListener("focusout", (event) => {
+  if (host && event.composedPath().includes(host)) return;
   if (!isEditable(event.target)) return;
   hideTimer = window.setTimeout(() => {
     if (!host?.shadowRoot?.activeElement && !host?.matches(":hover")) if (host) host.style.display = "none";
@@ -230,4 +270,4 @@ document.addEventListener("focusout", (event) => {
 window.addEventListener("scroll", () => { if (activeField && host?.style.display !== "none") positionHost(activeField, expandedWidget); }, true);
 window.addEventListener("resize", () => { if (activeField && host?.style.display !== "none") positionHost(activeField, expandedWidget); });
 
-if (isEditable(document.activeElement)) mountWidget(document.activeElement);
+if (isEditable(document.activeElement) && isAiPromptField(document.activeElement)) mountWidget(document.activeElement);
