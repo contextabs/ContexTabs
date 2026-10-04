@@ -43,7 +43,7 @@ export const VerificationResultSchema = z.object({
 });
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 
-export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, clarificationAnswer: z.string().max(4_000).optional() });
+export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, clarificationAnswer: z.string().max(4_000).optional(), skipClarification: z.boolean().optional() });
 export const AssistResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("clarification_required"), filter: FilterResponseSchema }),
   z.object({ status: z.literal("no_suggestion"), filter: FilterResponseSchema }),

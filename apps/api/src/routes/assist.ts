@@ -7,9 +7,9 @@ export async function registerAssistRoutes(app: FastifyInstance) {
     const parsed = AssistRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid request", details: parsed.error.flatten() });
     try {
-      const { context, clarificationAnswer } = parsed.data;
-      const filter = FilterResponseSchema.parse(await filterContext({ ...context, clarificationAnswer }));
-      if (filter.isAmbiguous && !clarificationAnswer && filter.clarifyingQuestion) {
+      const { context, clarificationAnswer, skipClarification } = parsed.data;
+      const filter = FilterResponseSchema.parse(await filterContext({ ...context, clarificationAnswer, skipClarification }));
+      if (filter.isAmbiguous && !clarificationAnswer && !skipClarification && filter.clarifyingQuestion) {
         return { status: "clarification_required", filter };
       }
       if (!filter.suggestionUseful) return { status: "no_suggestion", filter };

@@ -76,6 +76,21 @@ function isAiPromptField(field: Editable) {
   return false;
 }
 
+function getComposerRect(field: Editable) {
+  const fieldRect = field.getBoundingClientRect();
+  let ancestor = field.parentElement;
+  for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) {
+    const rect = ancestor.getBoundingClientRect();
+    const hasSiblingControls = Array.from(ancestor.querySelectorAll("button,[role=button]")).some((control) =>
+      !field.contains(control) && control.getClientRects().length > 0
+    );
+    if (hasSiblingControls && rect.width >= fieldRect.width * 0.85 && rect.height >= fieldRect.height * 0.85 && rect.width <= innerWidth * 1.05 && rect.height < 600) {
+      return rect;
+    }
+  }
+  return fieldRect;
+}
+
 const acceptedPrompts = new WeakMap<Editable, string>();
 
 function Widget({ field, close }: { field: Editable; close: () => void }) {
@@ -91,9 +106,13 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
   const lastInputRef = useRef(0);
   const autoStartedTextRef = useRef("");
   const stateRef = useRef(state);
-  useEffect(() => { stateRef.current = state; }, [state]);
-  useEffect(() => {
-    if (state === "clarification") clarificationInputRef.current?.focus();
+  useLayoutEffect(() => { stateRef.current = state; }, [state]);
+  useLayoutEffect(() => {
+    if (state !== "clarification") return;
+    const focusAnswer = () => clarificationInputRef.current?.focus({ preventScroll: true });
+    focusAnswer();
+    const focusFrame = requestAnimationFrame(focusAnswer);
+    return () => cancelAnimationFrame(focusFrame);
   }, [state, result]);
 
   const panelStyle = () => {
@@ -109,17 +128,18 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
   };
 
   useLayoutEffect(() => {
-    if (!panelRef.current) return;
     const updateLayout = () => refreshPanelLayout((value) => value + 1);
     const observer = new ResizeObserver(updateLayout);
-    observer.observe(panelRef.current);
+    if (panelRef.current) observer.observe(panelRef.current);
+    observer.observe(field);
     window.addEventListener("resize", updateLayout);
-    return () => { observer.disconnect(); window.removeEventListener("resize", updateLayout); };
-  }, [state, result]);
+    window.addEventListener("scroll", updateLayout, true);
+    return () => { observer.disconnect(); window.removeEventListener("resize", updateLayout); window.removeEventListener("scroll", updateLayout, true); };
+  }, [field, state, result]);
   const cancel = () => { requestRef.current?.abort(); requestRef.current = null; if (timerRef.current) clearTimeout(timerRef.current); };
   const dismiss = () => { cancel(); versionRef.current++; setResult(null); setClarification(""); setState("idle"); };
 
-  async function refine(answerToClarification?: string) {
+  async function refine(answerToClarification?: string, skipClarification = false) {
     const query = readField(field).trim();
     if (!query) return;
     autoStartedTextRef.current = query;
@@ -146,7 +166,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       const session = active["active-session"] ? await getSession(active["active-session"]) : undefined;
       if (session) context.sources.push({ id: `session-${session.id}`, kind: "session", title: session.title, text: JSON.stringify(session), capturedAt: new Date().toISOString() });
       if (answerToClarification) context.sources.push({ id: "clarification", kind: "clarification", text: answerToClarification, capturedAt: new Date().toISOString() });
-      const response = await fetch(`${API_URL}/api/assist`, { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ context, clarificationAnswer: answerToClarification }) });
+      const response = await fetch(`${API_URL}/api/assist`, { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ context, clarificationAnswer: answerToClarification, skipClarification }) });
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       const parsed = AssistResponseSchema.parse(await response.json());
       if (version !== versionRef.current || readField(field).trim() !== query) return;
@@ -178,29 +198,53 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       schedule(/[.!?]$/.test(current));
     };
     const onMove = () => { if (Date.now() - lastInputRef.current < 750) schedule(true); };
-    const onBlur = () => { if (stateRef.current === "idle" && Date.now() - lastInputRef.current < 1_500) schedule(true); };
+    const onBlur = (event: FocusEvent) => {
+      const movingIntoWidget = event.relatedTarget === host || Boolean(event.relatedTarget && host?.shadowRoot?.contains(event.relatedTarget as Node));
+      if (!movingIntoWidget && !host?.shadowRoot?.activeElement && stateRef.current === "idle" && Date.now() - lastInputRef.current < 1_500) schedule(true);
+    };
     const onPointerDown = (event: PointerEvent) => {
       if (!["suggestion", "clarification"].includes(stateRef.current)) return;
       if (!event.composedPath().includes(host!)) dismiss();
     };
+    const restoreAnswerFocus = (event: FocusEvent) => {
+      if (stateRef.current !== "clarification" || !/(^|\.)claude\.ai$/.test(location.hostname) || !event.composedPath().includes(field)) return;
+      event.stopImmediatePropagation();
+      const input = clarificationInputRef.current;
+      input?.focus({ preventScroll: true });
+      requestAnimationFrame(() => input?.focus({ preventScroll: true }));
+    };
     field.addEventListener("input", onInput); field.ownerDocument.addEventListener("pointermove", onMove); field.addEventListener("blur", onBlur);
     field.ownerDocument.addEventListener("pointerdown", onPointerDown, true);
-    return () => { cancel(); field.removeEventListener("input", onInput); field.ownerDocument.removeEventListener("pointermove", onMove); field.removeEventListener("blur", onBlur); field.ownerDocument.removeEventListener("pointerdown", onPointerDown, true); };
+    window.addEventListener("focusin", restoreAnswerFocus, true);
+    return () => { cancel(); field.removeEventListener("input", onInput); field.ownerDocument.removeEventListener("pointermove", onMove); field.removeEventListener("blur", onBlur); field.ownerDocument.removeEventListener("pointerdown", onPointerDown, true); window.removeEventListener("focusin", restoreAnswerFocus, true); };
   }, [field]);
 
   const optimized = result?.status === "complete" ? result.refinedPrompt : "";
+  const composerRect = getComposerRect(field);
+  const leftSpace = composerRect.left;
+  const rightSpace = innerWidth - composerRect.right;
+  const launcherGap = /(^|\.)claude\.ai$/.test(location.hostname) ? 8 : 4;
+  const placeRight = rightSpace >= LAUNCHER_SIZE + launcherGap && rightSpace >= leftSpace;
+  const placeLeft = !placeRight && leftSpace >= LAUNCHER_SIZE + launcherGap;
+  const launcherLeft = placeRight
+    ? composerRect.right + launcherGap
+    : placeLeft
+      ? composerRect.left - LAUNCHER_SIZE - launcherGap
+      : Math.max(4, Math.min(composerRect.right + launcherGap, innerWidth - LAUNCHER_SIZE - 4));
+  const launcherSide = placeRight || (!placeLeft && launcherLeft >= composerRect.right) ? "right" : "left";
+  const launcherTop = Math.max(8, Math.min(composerRect.bottom - LAUNCHER_SIZE - 4, innerHeight - LAUNCHER_SIZE - 8));
   return <>
-    <div className="launcher-wrap">
+    <div className={`launcher-wrap ${launcherSide}`} style={{ left: `${launcherLeft}px`, top: `${launcherTop}px` }}>
       <button className={`launcher ${state === "working" ? "working" : state === "suggestion" || state === "clarification" ? "ready" : ""}`} title={state === "working" ? "Cancel refinement" : state === "suggestion" ? "Review optimized prompt" : "Refine prompt now"} aria-label={state === "working" ? "Cancel refinement" : "Refine prompt now"} onClick={() => state === "idle" ? void refine() : dismiss()}>{state === "working" ? "…" : "✦"}</button>
       {(state === "working" || state === "suggestion" || state === "clarification") && <span className={`launcher-label ${state}`}>{state === "working" ? "Refining…" : state === "suggestion" ? "Review rewrite" : "Question"}</span>}
     </div>
     {(state === "suggestion" || state === "clarification") && <div ref={panelRef} className="panel" style={panelStyle()}>
       <button className="close" aria-label="Close suggestion" onClick={dismiss}>×</button>
-      {state === "suggestion" && <><div className="optimized-title">Optimized prompt</div><button className="optimized" aria-label="Use optimized prompt" onClick={() => { acceptedPrompts.set(field, optimized.trim()); insertText(field, optimized, true); close(); }}>{optimized}</button></>}
-      {state === "clarification" && <><div className="label">One detail will improve this</div><div className="question">{result?.status === "clarification_required" ? result.filter.clarifyingQuestion : ""}</div><div className="clarification-entry"><textarea ref={clarificationInputRef} autoFocus value={clarification} onChange={(event) => setClarification(event.target.value)} onPointerDown={(event) => { event.stopPropagation(); clarificationInputRef.current?.focus(); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (clarification.trim()) void refine(clarification.trim()); } }} placeholder="Your answer" aria-label="Answer the clarification question" /><button className="primary" disabled={!clarification.trim()} onClick={() => void refine(clarification.trim())}>Continue</button></div></>}
+      {state === "suggestion" && <><div className="optimized-title">Optimized prompt</div><button className="optimized" aria-label="Use optimized prompt" onClick={() => { acceptedPrompts.set(field, optimized.trim()); insertText(field, optimized, true); dismiss(); close(); }}>{optimized}</button></>}
+      {state === "clarification" && <><div className="label">One detail will improve this</div><div className="question">{result?.status === "clarification_required" ? result.filter.clarifyingQuestion : ""}</div><div className="clarification-entry"><textarea ref={clarificationInputRef} autoFocus value={clarification} onChange={(event) => setClarification(event.target.value)} onPointerDown={(event) => { event.stopPropagation(); requestAnimationFrame(() => clarificationInputRef.current?.focus({ preventScroll: true })); }} onClick={() => window.setTimeout(() => clarificationInputRef.current?.focus({ preventScroll: true }), 0)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (clarification.trim()) void refine(clarification.trim()); } }} placeholder="Your answer" aria-label="Answer the clarification question" /><div className="clarification-actions"><button className="primary" disabled={!clarification.trim()} onClick={() => void refine(clarification.trim())}>Continue</button><button className="secondary" onClick={() => void refine(undefined, true)}>Skip</button></div></div></>}
     </div>}
     <style>{`*{box-sizing:border-box}.launcher-wrap{position:relative;width:34px;height:34px}.launcher{width:34px;height:34px;border:0;border-radius:50%;background:#6750a4;color:#fff;font:18px system-ui;box-shadow:0 2px 8px #0004;cursor:pointer}.launcher.working{animation:pulse 1s infinite;background:#8a72c1}.launcher.ready{background:#3b7d4b;box-shadow:0 0 0 4px #3b7d4b33}@keyframes pulse{50%{transform:scale(1.1)}}.launcher-label{position:absolute;left:40px;top:5px;white-space:nowrap;border:1px solid #ffffff40;border-radius:12px;padding:4px 9px;background:#302a38e8;color:#fff;font:600 11px/1.2 system-ui,sans-serif;box-shadow:0 2px 7px #0003;pointer-events:none}.launcher-label.working{background:#514564ed}.launcher-label.suggestion{background:#315c40ed}.panel{position:fixed;z-index:2147483647;max-width:calc(100vw - 16px);max-height:300px;overflow:auto;scrollbar-width:none;background:rgba(37,31,47,.9);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#f8f5fc;border:1px solid #ffffff30;border-radius:14px;box-shadow:0 9px 30px #0004;padding:14px;font:13px/1.45 system-ui,sans-serif}.panel::-webkit-scrollbar{display:none}.panel button{font:600 12px/1.3 system-ui,sans-serif}.close{position:absolute;right:8px;top:8px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:1px solid #ffffff35;border-radius:50%;background:#ffffff15;color:#fff;font-size:17px!important;line-height:1;padding:0;cursor:pointer}.optimized{display:block;width:100%;margin-top:18px;text-align:left;border:1px solid #c2a9f7;border-radius:8px;background:#8061b733;padding:10px;color:#fff;white-space:pre-wrap;cursor:pointer}.optimized:hover{background:#9275ca66;border-color:#e0d1ff}.question{font-weight:600;margin:8px 0 10px;color:#fff}textarea{width:100%;min-height:56px;border:1px solid #ffffff40;border-radius:8px;padding:8px;color:#fff;background:#ffffff14;font:13px/1.4 system-ui,sans-serif}textarea::placeholder{color:#c9c1d1}.primary{margin-top:8px;border:1px solid #c2a9f7;border-radius:8px;background:#8061b7;color:#fff;padding:8px 12px;cursor:pointer}.primary:hover{background:#9275ca}.primary:disabled{opacity:.5;cursor:not-allowed}`}</style>
-    <style>{`.launcher-wrap{width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px}.launcher{width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px;font-size:16px}.launcher-label{left:${LAUNCHER_SIZE + 6}px;top:3px}.panel,.panel *{pointer-events:auto}.optimized-title{font-weight:700;color:#fff;padding:1px 34px 0 2px}.clarification-entry{display:flex;align-items:stretch;gap:8px}.clarification-entry textarea{flex:1;min-width:0;min-height:42px;resize:vertical}.clarification-entry .primary{flex:none;align-self:stretch;margin-top:0}`}</style>
+    <style>{`.launcher-wrap{position:fixed;width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px;pointer-events:none}.launcher{width:${LAUNCHER_SIZE}px;height:${LAUNCHER_SIZE}px;font-size:16px;pointer-events:auto}.launcher-label{top:3px;left:${LAUNCHER_SIZE + 6}px}.launcher-wrap.left .launcher-label{left:auto;right:${LAUNCHER_SIZE + 6}px}.launcher-wrap.right .launcher-label{left:${LAUNCHER_SIZE + 6}px;right:auto}.panel,.panel *{pointer-events:auto}.optimized-title{font-weight:700;color:#fff;padding:1px 34px 0 2px}.clarification-entry{display:flex;align-items:stretch;gap:8px}.clarification-entry textarea{flex:1;min-width:0;min-height:42px;resize:vertical}.clarification-actions{display:flex;flex-direction:column;gap:6px;flex:none}.clarification-actions .primary,.clarification-actions .secondary{margin-top:0}.secondary{border:1px solid #ffffff40;border-radius:8px;background:#ffffff12;color:#f8f5fc;padding:8px 12px;cursor:pointer}.secondary:hover{background:#ffffff25}`}</style>
   </>;
 }
 
@@ -212,20 +256,15 @@ let expandedWidget = false;
 
 // Adjust these to tune the floating launcher relative to the chat box.
 const LAUNCHER_SIZE = 28; // button diameter, in pixels
-const LAUNCHER_TOP_INSET = -2; // vertical offset from the textbox top; lower this to move up
-const LAUNCHER_RIGHT_INSET = 58; // distance from the textbox's right edge; raise to move left
+const LAUNCHER_FALLBACK_INSET = 58;
 
 function positionHost(field: Editable, expanded = false) {
   if (!host) return;
-  const rect = field.getBoundingClientRect();
   expandedWidget = expanded;
-  const width = expanded ? 350 : LAUNCHER_SIZE;
-  host.style.width = `${width}px`;
-  host.style.height = expanded ? "auto" : "40px";
-  // Keep the launcher inside the field near its upper edge, clear of controls
-  // grouped on its right side.
-  host.style.left = `${Math.max(8, Math.min(rect.right - LAUNCHER_RIGHT_INSET, window.innerWidth - width - 8))}px`;
-  host.style.top = `${Math.max(8, Math.min(rect.top + LAUNCHER_TOP_INSET, window.innerHeight - (expanded ? 490 : 48)))}px`;
+  host.style.left = "0";
+  host.style.top = "0";
+  host.style.width = "100vw";
+  host.style.height = "100vh";
 }
 
 function mountWidget(field: Editable) {
@@ -238,11 +277,11 @@ function mountWidget(field: Editable) {
   expandedWidget = false;
   if (!host) {
     host = document.createElement("div");
-    host.style.cssText = "position:fixed;z-index:2147483647;width:40px;height:40px;pointer-events:auto;overflow:visible";
+    host.style.cssText = "position:fixed;z-index:2147483647;inset:0;width:100vw;height:100vh;pointer-events:none;overflow:visible";
     document.documentElement.append(host);
     const shadow = host.attachShadow({ mode: "open" });
     const mountPoint = document.createElement("div");
-    mountPoint.style.pointerEvents = "auto";
+    mountPoint.style.cssText = "position:relative;width:100%;height:100%;pointer-events:none";
     shadow.append(mountPoint);
     root = createRoot(mountPoint);
   }
