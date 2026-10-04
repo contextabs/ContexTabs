@@ -1,6 +1,6 @@
 # Ambient Context
 
-StormHacks Chrome extension that adds an opt-in prompt optimizer beside common editable fields. Field detection runs locally; field contents and page context are sent to the API only after the user activates the widget.
+StormHacks Chrome extension that adds an opt-in AI assistant beside common editable fields. Field detection runs locally; field contents and page context are sent to the API only after the user activates the widget.
 
 ## Prerequisites
 
@@ -37,11 +37,12 @@ If pnpm reports ignored native build scripts, review `pnpm approve-builds` and a
 
 - Detects text inputs, textareas, and contenteditable elements locally.
 - Shows a small Grammarly-style button beside the focused editable field.
-- Sends the request only after the user opens the widget and presses **Optimize prompt**.
-- Captures the active page's readable text and open-tab titles/URLs on that explicit action.
-- Rewrites the user's request into a context-aware prompt for a downstream AI, or asks at most one clarification question.
-- Does not answer or fulfill the underlying request.
+- Starts a request after an explicit manual click, or automatically after a completion signal in supported AI chat fields.
+- Rewrites the user's intent into a stronger prompt and inserts that refined prompt into the field; the MVP does not answer or execute the request.
+- On ChatGPT, Gemini, and Claude prompt fields, starts refinement after a short typing pause and shows a compact comparison only when the rewrite is materially useful. Further typing cancels the pending suggestion.
+- On that explicit action, reads the active page plus readable text from up to 8 relevant open tabs; it considers tab titles, URLs, recency, and (when permitted) tab group names.
+- Uses that evidence to enrich a prompt for a downstream LLM; it asks at most one clarification question and never answers or executes the original task.
 - Stores saved research sessions and approved preferences in extension-local storage.
-- This MVP never moves tabs; grouping is a later enhancement.
+- Tab grouping is available only as an explicit action from a saved research session.
 
 The API endpoint is unauthenticated for a local hackathon demo. Do not expose it publicly without adding authentication or a per-user token and abuse controls.

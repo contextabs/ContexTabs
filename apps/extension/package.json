@@ -8,7 +8,7 @@
     "name": "Ambient Context",
     "version": "0.0.1",
     "description": "Ambient context browser extension",
-    "permissions": ["storage", "tabs"],
+    "permissions": ["storage", "tabs", "scripting"],
     "optional_permissions": ["tabGroups"],
     "host_permissions": ["http://*/*", "https://*/*", "http://localhost:8787/*", "http://127.0.0.1:8787/*"],
     "icons": {

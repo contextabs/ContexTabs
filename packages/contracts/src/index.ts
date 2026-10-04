@@ -10,7 +10,7 @@ export type MemoryItem = z.infer<typeof MemoryItemSchema>;
 export const ContextSourceSchema = z.object({
   id: z.string(), kind: z.enum(["selection", "field", "page", "tab", "memory", "clarification", "session"]),
   title: z.string().optional(), url: z.string().url().optional(), text: z.string().max(40_000).optional(),
-  tabGroupId: z.number().optional(), tabId: z.number().optional(), capturedAt: z.string()
+  tabGroupId: z.number().optional(), tabGroupTitle: z.string().max(200).optional(), tabId: z.number().optional(), capturedAt: z.string()
 });
 
 export const ContextPayloadSchema = z.object({
@@ -23,16 +23,34 @@ export type ContextPayload = z.infer<typeof ContextPayloadSchema>;
 export const FilterResponseSchema = z.object({
   requestId: z.string(), intent: z.string(), optimizedPrompt: z.string(), selectedSourceIds: z.array(z.string()),
   filteredContext: z.string(), conflicts: z.array(z.object({ description: z.string(), sourceIds: z.array(z.string()) })),
-  isAmbiguous: z.boolean(), clarifyingQuestion: z.string().nullable(), missingInformation: z.array(z.string())
+  isAmbiguous: z.boolean(), clarifyingQuestion: z.string().nullable(), missingInformation: z.array(z.string()),
+  suggestionUseful: z.boolean()
 });
 export type FilterResponse = z.infer<typeof FilterResponseSchema>;
+
+export const ExecutionRequestSchema = z.object({
+  requestId: z.string(), optimizedPrompt: z.string().min(1).max(8_000), filteredContext: z.string().max(40_000),
+  sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional() })),
+  preferences: z.array(MemoryItemSchema), clarificationAnswer: z.string().max(4_000).optional(),
+  correctionFeedback: z.string().max(4_000).optional()
+});
+export type ExecutionRequest = z.infer<typeof ExecutionRequestSchema>;
+
+export const VerificationResultSchema = z.object({
+  requestId: z.string(), passed: z.boolean(), score: z.number().min(0).max(1),
+  issues: z.array(z.object({ kind: z.enum(["intent_gap", "unsupported_claim", "format", "incomplete"]), description: z.string() })),
+  correctionPrompt: z.string().optional()
+});
+export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 
 export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, clarificationAnswer: z.string().max(4_000).optional() });
 export const AssistResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("clarification_required"), filter: FilterResponseSchema }),
+  z.object({ status: z.literal("no_suggestion"), filter: FilterResponseSchema }),
   z.object({
-    status: z.literal("complete"), filter: FilterResponseSchema, optimizedPrompt: z.string(),
-    sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() }))
+    status: z.literal("complete"), filter: FilterResponseSchema, refinedPrompt: z.string(),
+    sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() })),
+    memorySuggestions: z.array(z.string()).max(2).optional()
   })
 ]);
 export type AssistResponse = z.infer<typeof AssistResponseSchema>;
