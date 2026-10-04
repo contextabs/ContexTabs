@@ -1,8 +1,15 @@
 import type { FastifyInstance } from "fastify";
-import { AssistRequestSchema, ContextPayloadSchema, FilterResponseSchema } from "@ambient/contracts";
-import { extractMemory, filterContext } from "@ambient/llm";
+import { AssistRequestSchema, ContextPayloadSchema, FilterResponseSchema, TabClassificationRequestSchema, TabClassificationResponseSchema } from "@ambient/contracts";
+import { classifyTabBatch, extractMemory, filterContext } from "@ambient/llm";
 
 export async function registerAssistRoutes(app: FastifyInstance) {
+  app.post("/api/classify-tabs", async (request, reply) => {
+    const parsed = TabClassificationRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid tab classification request", details: parsed.error.flatten() });
+    if (!parsed.data.tabs.length) return { assignments: [] };
+    try { return TabClassificationResponseSchema.parse(await classifyTabBatch(parsed.data)); }
+    catch (error) { request.log.error(error); return reply.code(502).send({ error: "Tab classification failed" }); }
+  });
   app.post("/api/assist", async (request, reply) => {
     const parsed = AssistRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid request", details: parsed.error.flatten() });

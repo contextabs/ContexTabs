@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AssistResponseSchema, type ContextPayload, type MemoryItem, type ResearchSession } from "@ambient/contracts";
 import { getSession, saveMemory, saveSession } from "../lib/local-store";
 import { collectTabs, type ContextTab } from "../lib/tabs";
+import { conversationStorageKey, extractConversation, mergeConversationSummary } from "../lib/conversation";
 
 export const config = { matches: ["http://*/*", "https://*/*"], all_frames: false };
 
@@ -53,7 +54,7 @@ function makePayload(field: Editable, query: string, tabs: ContextTab[], memory:
   const sources: ContextPayload["sources"] = [
     // prioritize the user's input field so it's seen first by the LLM
     { id: "field", kind: "field", text: readField(field).slice(0, 8_000), capturedAt },
-    { id: "active-page", kind: "page", title: document.title, url: location.href, text: (main?.innerText ?? "").slice(0, 14_000), capturedAt },
+    { id: "active-page", kind: "page", title: document.title, url: location.href, text: ((main as HTMLElement | null)?.innerText ?? "").slice(0, 14_000), capturedAt },
     ...tabs.filter((tab) => tab.url && tab.title && /^https?:\/\//.test(tab.url)).slice(0, 8).map((tab, index) => ({
       id: `tab-${tab.id ?? index}`, kind: "tab" as const, title: tab.title, url: tab.url, tabId: tab.id,
       text: tab.contextText?.slice(0, 3_500),
@@ -67,6 +68,39 @@ function makePayload(field: Editable, query: string, tabs: ContextTab[], memory:
     sources, preferences: memory.filter((item) => item.status === "approved").slice(0, 10)
   };
 }
+
+function GroupSuggestion() {
+  const [cluster, setCluster] = useState<any>();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => void chrome.runtime.sendMessage({ type: "GET_CLUSTER_SUGGESTION" }).then((value) => { if (alive) setCluster(value); }).catch(() => undefined);
+    load(); const timer = window.setInterval(load, 5_000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
+  if (!cluster || !["suggested", "tentative"].includes(cluster.status)) return null;
+  const act = async (action: string) => {
+    if (action === "accept") {
+      await chrome.runtime.sendMessage({ type: "OPEN_AMBIENT_POPUP" }).catch(() => undefined);
+      return;
+    }
+    setBusy(true);
+    await chrome.runtime.sendMessage({ type: "CLUSTER_ACTION", id: cluster.id, action, permissionGranted: action === "accept" }).catch(() => undefined);
+    setCluster(undefined); setBusy(false);
+  };
+  return <aside className="ambient-group"><div className="ambient-brand">✦ Ambient</div><div className="ambient-title">Related tabs found</div><div className="ambient-name">{cluster.name}</div><ul>{(cluster.members ?? []).slice(0, 3).map((member: { tabId: number; title: string }) => <li key={member.tabId}>{member.title}</li>)}</ul><div className="ambient-meta">{cluster.tabIds.length} tabs · {Math.round(cluster.confidence * 100)}% match</div><div className="ambient-actions"><button disabled={busy} onClick={() => void act("accept")}>Review group</button><button disabled={busy} onClick={() => void act("internal")}>Use for context</button><button disabled={busy} onClick={() => void act("dismiss")}>Not now</button></div><button className="ambient-never" disabled={busy} onClick={() => void act("never")}>Never suggest this category</button><style>{`.ambient-group{position:fixed;z-index:2147483646;top:18px;right:18px;width:280px;padding:14px;border:1px solid #ffffff35;border-radius:14px;background:rgba(37,31,47,.94);box-shadow:0 8px 28px #0004;color:#f8f5fc;font:12px/1.4 system-ui,sans-serif;backdrop-filter:blur(12px)}.ambient-brand{font-size:10px;font-weight:700;color:#c6a9ff}.ambient-title{font-weight:700;font-size:14px;margin:5px 0}.ambient-name{font-size:13px}.ambient-group ul{margin:6px 0;padding-left:17px;font-size:11px;color:#ddd}.ambient-group li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ambient-meta{color:#c9c1d1;margin:3px 0 10px}.ambient-actions{display:flex;gap:5px;flex-wrap:wrap}.ambient-actions button{border:1px solid #c2a9f7;border-radius:7px;background:#8061b7;color:#fff;padding:6px 8px;cursor:pointer;font:600 11px system-ui}.ambient-actions button:nth-child(n+2){background:#ffffff14;border-color:#ffffff35}.ambient-never{margin-top:8px;border:0;background:transparent;color:#cbc4d3;text-decoration:underline;font:10px system-ui;cursor:pointer;padding:2px}.ambient-group button:disabled{opacity:.5}`}</style></aside>;
+}
+
+function mountGroupSuggestion() {
+  const id = "ambient-group-suggestion-root";
+  if (document.getElementById(id)) return;
+  const node = document.createElement("div"); node.id = id; node.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483646";
+  document.documentElement.append(node);
+  const shadow = node.attachShadow({ mode: "open" });
+  const mount = document.createElement("div"); mount.style.cssText = "pointer-events:none"; shadow.append(mount);
+  createRoot(mount).render(<GroupSuggestion />);
+}
+mountGroupSuggestion();
 
 function isAiPromptField(field: Editable) {
   const host = location.hostname;
@@ -163,6 +197,16 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       const [stored, active] = await Promise.all([storedPromise, activePromise]);
       if (version !== versionRef.current) return;
       const context = makePayload(field, query, tabs, stored["approved-memory"] ?? []);
+      const conversation = extractConversation();
+      if (conversation && await chrome.storage.local.get({ "conversation-capture-enabled": true }).then((value) => value["conversation-capture-enabled"])) {
+        const summaryKey = conversationStorageKey(conversation.url);
+        const saved = await chrome.runtime.sendMessage({ type: "GET_CONVERSATION_SUMMARY", key: summaryKey }).catch(() => undefined);
+        const summary = mergeConversationSummary(saved, conversation);
+        await chrome.runtime.sendMessage({ type: "SAVE_CONVERSATION_SUMMARY", key: summaryKey, summary }).catch(() => undefined);
+        context.conversation = { ...conversation, summary };
+      }
+      const clusters = await chrome.runtime.sendMessage({ type: "GET_RELEVANT_CLUSTERS", query, conversationText: context.conversation?.messages.map((message) => message.text).join(" ") ?? "" }).catch(() => []);
+      for (const cluster of (clusters ?? []).slice(0, 2)) context.sources.push({ id: cluster.id, kind: "cluster", title: cluster.name, text: JSON.stringify({ category: cluster.category, summary: cluster.summary, confidence: cluster.confidence, entities: cluster.tokens, representativeTabs: (cluster.members ?? []).slice(0, 4).map((member: { title: string; url: string }) => ({ title: member.title, url: member.url })) }), capturedAt: cluster.lastActiveAt });
       const session = active["active-session"] ? await getSession(active["active-session"]) : undefined;
       if (session) context.sources.push({ id: `session-${session.id}`, kind: "session", title: session.title, text: JSON.stringify(session), capturedAt: new Date().toISOString() });
       if (answerToClarification) context.sources.push({ id: "clarification", kind: "clarification", text: answerToClarification, capturedAt: new Date().toISOString() });
@@ -213,10 +257,10 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       input?.focus({ preventScroll: true });
       requestAnimationFrame(() => input?.focus({ preventScroll: true }));
     };
-    field.addEventListener("input", onInput); field.ownerDocument.addEventListener("pointermove", onMove); field.addEventListener("blur", onBlur);
+    field.addEventListener("input", onInput); field.ownerDocument.addEventListener("pointermove", onMove); field.addEventListener("blur", onBlur as EventListener);
     field.ownerDocument.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("focusin", restoreAnswerFocus, true);
-    return () => { cancel(); field.removeEventListener("input", onInput); field.ownerDocument.removeEventListener("pointermove", onMove); field.removeEventListener("blur", onBlur); field.ownerDocument.removeEventListener("pointerdown", onPointerDown, true); window.removeEventListener("focusin", restoreAnswerFocus, true); };
+    window.addEventListener("focusin", restoreAnswerFocus as EventListener, true);
+    return () => { cancel(); field.removeEventListener("input", onInput); field.ownerDocument.removeEventListener("pointermove", onMove); field.removeEventListener("blur", onBlur as EventListener); field.ownerDocument.removeEventListener("pointerdown", onPointerDown, true); window.removeEventListener("focusin", restoreAnswerFocus as EventListener, true); };
   }, [field]);
 
   const optimized = result?.status === "complete" ? result.refinedPrompt : "";
