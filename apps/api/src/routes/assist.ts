@@ -12,6 +12,7 @@ export async function registerAssistRoutes(app: FastifyInstance) {
       if (filter.isAmbiguous && !clarificationAnswer && filter.clarifyingQuestion) {
         return { status: "clarification_required", filter };
       }
+      if (!filter.suggestionUseful) return { status: "no_suggestion", filter };
       const sources = context.sources.filter((source) => filter.selectedSourceIds.includes(source.id)).map(({ id, title, url, tabId }) => ({ id, title, url, tabId }));
       return { status: "complete", filter, refinedPrompt: filter.optimizedPrompt, sources };
     } catch (error) {

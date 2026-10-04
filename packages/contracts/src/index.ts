@@ -23,7 +23,8 @@ export type ContextPayload = z.infer<typeof ContextPayloadSchema>;
 export const FilterResponseSchema = z.object({
   requestId: z.string(), intent: z.string(), optimizedPrompt: z.string(), selectedSourceIds: z.array(z.string()),
   filteredContext: z.string(), conflicts: z.array(z.object({ description: z.string(), sourceIds: z.array(z.string()) })),
-  isAmbiguous: z.boolean(), clarifyingQuestion: z.string().nullable(), missingInformation: z.array(z.string())
+  isAmbiguous: z.boolean(), clarifyingQuestion: z.string().nullable(), missingInformation: z.array(z.string()),
+  suggestionUseful: z.boolean()
 });
 export type FilterResponse = z.infer<typeof FilterResponseSchema>;
 
@@ -45,6 +46,7 @@ export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, clarificationAnswer: z.string().max(4_000).optional() });
 export const AssistResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("clarification_required"), filter: FilterResponseSchema }),
+  z.object({ status: z.literal("no_suggestion"), filter: FilterResponseSchema }),
   z.object({
     status: z.literal("complete"), filter: FilterResponseSchema, refinedPrompt: z.string(),
     sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() })),
