@@ -27,28 +27,12 @@ export const FilterResponseSchema = z.object({
 });
 export type FilterResponse = z.infer<typeof FilterResponseSchema>;
 
-export const ExecutionRequestSchema = z.object({
-  requestId: z.string(), optimizedPrompt: z.string().min(1).max(8_000), filteredContext: z.string().max(40_000),
-  sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional() })),
-  preferences: z.array(MemoryItemSchema), clarificationAnswer: z.string().max(4_000).optional(),
-  correctionFeedback: z.string().max(4_000).optional()
-});
-export type ExecutionRequest = z.infer<typeof ExecutionRequestSchema>;
-
-export const VerificationResultSchema = z.object({
-  requestId: z.string(), passed: z.boolean(), score: z.number().min(0).max(1),
-  issues: z.array(z.object({ kind: z.enum(["intent_gap", "unsupported_claim", "format", "incomplete"]), description: z.string() })),
-  correctionPrompt: z.string().optional()
-});
-export type VerificationResult = z.infer<typeof VerificationResultSchema>;
-
 export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, clarificationAnswer: z.string().max(4_000).optional() });
 export const AssistResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("clarification_required"), filter: FilterResponseSchema }),
   z.object({
-    status: z.literal("complete"), filter: FilterResponseSchema, answer: z.string(),
-    sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() })),
-    verification: VerificationResultSchema, memorySuggestions: z.array(z.string()).max(2).optional()
+    status: z.literal("complete"), filter: FilterResponseSchema, optimizedPrompt: z.string(),
+    sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() }))
   })
 ]);
 export type AssistResponse = z.infer<typeof AssistResponseSchema>;

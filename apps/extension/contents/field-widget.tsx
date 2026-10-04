@@ -67,7 +67,7 @@ function makePayload(field: Editable, query: string, tabs: chrome.tabs.Tab[], me
 
 function Widget({ field, close }: { field: Editable; close: () => void }) {
   const [query, setQuery] = useState(readField(field));
-  const [answer, setAnswer] = useState("");
+  const [optimizedPrompt, setOptimizedPrompt] = useState("");
   const [clarification, setClarification] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -101,10 +101,10 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       const parsed = AssistResponseSchema.parse(await response.json());
       setResult(parsed);
       if (parsed.status === "complete") {
-        setAnswer(parsed.answer);
+        setOptimizedPrompt(parsed.optimizedPrompt);
         void fetch(`${API_URL}/api/memory-suggestions`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: context.query, answer: parsed.answer })
+          body: JSON.stringify({ query: context.query, optimizedPrompt: parsed.optimizedPrompt })
         }).then((memoryResponse) => memoryResponse.ok ? memoryResponse.json() : { suggestions: [] })
           .then((memoryResult: { suggestions?: string[] }) => setMemorySuggestions((memoryResult.suggestions ?? []).slice(0, 2)))
           .catch(() => undefined);
@@ -121,7 +121,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       id: crypto.randomUUID(), title: filter.intent.slice(0, 80) || "Research session", goal: filter.intent,
       createdAt: now, updatedAt: now,
       sources: result.sources.filter((source) => source.url).map((source) => ({ title: source.title, url: source.url!, tabId: source.tabId })),
-      findings: [answer.slice(0, 2_000)], contradictions: filter.conflicts.map((item) => item.description),
+      findings: [optimizedPrompt.slice(0, 2_000)], contradictions: filter.conflicts.map((item) => item.description),
       unknowns: filter.missingInformation, nextSteps: []
     };
     await saveSession(session);
@@ -134,7 +134,6 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
     setMemorySuggestions((items) => items.filter((entry) => entry !== text));
   }
 
-
   const clarificationQuestion = result?.status === "clarification_required" ? result.filter.clarifyingQuestion : null;
   return <div className="card">
     <div className="header"><strong>Ambient</strong><button aria-label="Close" onClick={close}>×</button></div>
@@ -142,16 +141,16 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       <div className="question">{clarificationQuestion}</div>
       <textarea value={clarification} onChange={(event) => setClarification(event.target.value)} placeholder="Your answer" />
       <button className="primary" disabled={pending || !clarification.trim()} onClick={() => submit(clarification.trim())}>{pending ? "Working…" : "Continue"}</button>
-    </> : !answer ? <>
+    </> : !optimizedPrompt ? <>
       <textarea ref={composerRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What would you like help with?" />
-      <div className="hint">Uses this page and related open tabs when you submit.</div>
-      <button className="primary" disabled={pending} onClick={() => submit()}>{pending ? "Finding context…" : "Improve"}</button>
+      <div className="hint">Uses relevant page and tab context to optimize your prompt when you submit.</div>
+      <button className="primary" disabled={pending} onClick={() => submit()}>{pending ? "Optimizing…" : "Optimize prompt"}</button>
     </> : <>
-      <div className="answer">{answer}</div>
+      <div className="label">Optimized prompt</div><div className="answer">{optimizedPrompt}</div>
       {result?.status === "complete" && result.sources.length > 0 && <div className="sources"><strong>Sources</strong>{result.sources.map((source) => source.url && <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>)}</div>}
       <div className="actions">
-        <button onClick={() => { insertText(field, answer); close(); }}>Insert</button>
-        <button onClick={() => { insertText(field, answer, true); close(); }}>Replace field</button>
+        <button onClick={() => { insertText(field, optimizedPrompt); close(); }}>Insert prompt</button>
+        <button onClick={() => { insertText(field, optimizedPrompt, true); close(); }}>Replace field</button>
         <button onClick={saveResearchSession} disabled={sessionSaved}>{sessionSaved ? "Session saved" : "Save session"}</button>
       </div>
       {memorySuggestions.map((suggestion) => <button className="memory" key={suggestion} onClick={() => approveMemory(suggestion)}>Remember: {suggestion} ＋</button>)}
@@ -162,7 +161,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:#202124}.header strong{font-size:14px}.header button{border:0;background:transparent;font-size:20px;cursor:pointer;color:#5f6368}
       textarea{width:100%;min-height:90px;resize:vertical;border:1px solid #dadce0;border-radius:9px;padding:10px;font:13px/1.45 system-ui,sans-serif;color:#202124;background:#fff;outline-color:#6750a4}
       button{cursor:pointer}.primary{width:100%;margin-top:10px;border:0;border-radius:9px;background:#6750a4;color:white;padding:9px 12px;font-weight:600}.primary:disabled{opacity:.6;cursor:wait}
-      .hint{color:#6b7280;font-size:11px;margin-top:6px}.question{font-weight:600;margin:8px 0}.answer{white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto}.sources{display:grid;gap:4px;margin-top:12px;font-size:11px}.sources a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#4f378b}.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.actions button,.memory{border:1px solid #ddd;border-radius:8px;background:#f8f7fb;padding:7px 9px;color:#333}.memory{margin-top:8px;font-size:11px}.error{color:#b3261e;margin-top:8px;font-size:12px}
+      .hint{color:#6b7280;font-size:11px;margin-top:6px}.question{font-weight:600;margin:8px 0}.label{font-size:11px;font-weight:700;color:#5f6368;margin-bottom:5px;text-transform:uppercase}.answer{white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto}.sources{display:grid;gap:4px;margin-top:12px;font-size:11px}.sources a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#4f378b}.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.actions button,.memory{border:1px solid #ddd;border-radius:8px;background:#f8f7fb;padding:7px 9px;color:#333}.memory{margin-top:8px;font-size:11px}.error{color:#b3261e;margin-top:8px;font-size:12px}
     `}</style>
   </div>;
 }

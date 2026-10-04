@@ -1,6 +1,6 @@
 # Ambient Context
 
-StormHacks Chrome extension that adds an opt-in AI assistant beside common editable fields. Field detection runs locally; field contents and page context are sent to the API only after the user activates the widget.
+StormHacks Chrome extension that adds an opt-in prompt optimizer beside common editable fields. Field detection runs locally; field contents and page context are sent to the API only after the user activates the widget.
 
 ## Prerequisites
 
@@ -37,9 +37,10 @@ If pnpm reports ignored native build scripts, review `pnpm approve-builds` and a
 
 - Detects text inputs, textareas, and contenteditable elements locally.
 - Shows a small Grammarly-style button beside the focused editable field.
-- Sends the request only after the user opens the widget and presses **Improve**.
+- Sends the request only after the user opens the widget and presses **Optimize prompt**.
 - Captures the active page's readable text and open-tab titles/URLs on that explicit action.
-- Asks at most one clarification question, evaluates the answer, and performs at most one correction pass.
+- Rewrites the user's request into a context-aware prompt for a downstream AI, or asks at most one clarification question.
+- Does not answer or fulfill the underlying request.
 - Stores saved research sessions and approved preferences in extension-local storage.
 - This MVP never moves tabs; grouping is a later enhancement.
 
