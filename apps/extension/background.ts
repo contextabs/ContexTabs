@@ -12,11 +12,50 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (!existing["onboarding-seen"]) await chrome.storage.local.set({ "onboarding-seen": true });
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   void (async () => {
     switch (message?.type) {
       case "LIST_TABS":
         return await chrome.tabs.query({ currentWindow: true });
+      case "COLLECT_TAB_CONTEXT": {
+        const tabs = await chrome.tabs.query(sender.tab?.windowId === undefined ? { currentWindow: true } : { windowId: sender.tab.windowId });
+        const activeTab = tabs.find((tab) => tab.id === sender.tab?.id) ?? tabs.find((tab) => tab.active);
+        let groups = new Map<number, string>();
+        try {
+          const browserGroups = await chrome.tabGroups.query({});
+          groups = new Map(browserGroups.map((group) => [group.id, group.title || "Unnamed group"]));
+        } catch { /* tabGroups permission is optional */ }
+
+        const words = String(message.query ?? "").toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+        const candidates = tabs.filter((tab) => tab.id !== activeTab?.id && tab.id !== undefined &&
+          tab.url && /^https?:\/\//.test(tab.url) && !/^(chrome|edge|about|devtools):/.test(tab.url));
+        candidates.sort((a, b) => {
+          const score = (tab: chrome.tabs.Tab) => {
+            const haystack = `${tab.title ?? ""} ${tab.url ?? ""} ${groups.get(tab.groupId) ?? ""}`.toLowerCase();
+            const lexical = words.reduce((sum, word) => sum + (haystack.includes(word) ? 2 : 0), 0);
+            const sameGroup = activeTab?.groupId !== undefined && activeTab.groupId >= 0 && tab.groupId === activeTab.groupId ? 5 : 0;
+            return lexical + sameGroup;
+          };
+          return score(b) - score(a) || (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0);
+        });
+
+        const selected = candidates.slice(0, 8);
+        const results = await Promise.all(selected.map(async (tab) => {
+          let text = "";
+          try {
+            const extracted = await chrome.scripting.executeScript({
+              target: { tabId: tab.id! },
+              func: () => {
+                const root = document.querySelector("main, article, [role=main]") ?? document.body;
+                return (root?.innerText ?? "").replace(/\n{3,}/g, "\n\n").slice(0, 3_500);
+              }
+            });
+            text = String(extracted[0]?.result ?? "");
+          } catch { /* restricted pages, discarded tabs, and protected frames are skipped */ }
+          return { ...tab, contextText: text, contextGroupTitle: tab.groupId >= 0 ? groups.get(tab.groupId) : undefined };
+        }));
+        return results;
+      }
       case "LIST_SESSIONS":
         return await (await dbPromise).getAll("sessions");
       case "GET_SESSION":

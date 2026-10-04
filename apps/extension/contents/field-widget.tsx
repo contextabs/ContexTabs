@@ -2,7 +2,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useEffect, useRef, useState } from "react";
 import { AssistResponseSchema, type ContextPayload, type MemoryItem, type ResearchSession } from "@ambient/contracts";
 import { getSession, saveMemory, saveSession } from "../lib/local-store";
-import { collectTabs } from "../lib/tabs";
+import { collectTabs, type ContextTab } from "../lib/tabs";
 
 export const config = { matches: ["http://*/*", "https://*/*"], all_frames: false };
 
@@ -44,7 +44,7 @@ function insertText(field: Editable, value: string, replaceAll = false) {
   field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
 }
 
-function makePayload(field: Editable, query: string, tabs: chrome.tabs.Tab[], memory: MemoryItem[]): ContextPayload {
+function makePayload(field: Editable, query: string, tabs: ContextTab[], memory: MemoryItem[]): ContextPayload {
   const capturedAt = new Date().toISOString();
   const main = document.querySelector("main, article, [role=main]") ?? document.body;
   const selection = field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
@@ -53,9 +53,11 @@ function makePayload(field: Editable, query: string, tabs: chrome.tabs.Tab[], me
   const sources: ContextPayload["sources"] = [
     { id: "field", kind: "field", text: readField(field).slice(0, 8_000), capturedAt },
     { id: "active-page", kind: "page", title: document.title, url: location.href, text: (main?.innerText ?? "").slice(0, 14_000), capturedAt },
-    ...tabs.filter((tab) => tab.url && tab.title && /^https?:\/\//.test(tab.url)).slice(0, 12).map((tab, index) => ({
+    ...tabs.filter((tab) => tab.url && tab.title && /^https?:\/\//.test(tab.url)).slice(0, 8).map((tab, index) => ({
       id: `tab-${tab.id ?? index}`, kind: "tab" as const, title: tab.title, url: tab.url, tabId: tab.id,
-      tabGroupId: typeof tab.groupId === "number" && tab.groupId >= 0 ? tab.groupId : undefined, capturedAt
+      text: tab.contextText?.slice(0, 3_500),
+      tabGroupId: typeof tab.groupId === "number" && tab.groupId >= 0 ? tab.groupId : undefined,
+      tabGroupTitle: tab.contextGroupTitle, capturedAt
     }))
   ];
   if (selection) sources.unshift({ id: "selection", kind: "selection", text: selection.slice(0, 8_000), capturedAt });
@@ -67,7 +69,7 @@ function makePayload(field: Editable, query: string, tabs: chrome.tabs.Tab[], me
 
 function Widget({ field, close }: { field: Editable; close: () => void }) {
   const [query, setQuery] = useState(readField(field));
-  const [answer, setAnswer] = useState("");
+  const [refinedPrompt, setRefinedPrompt] = useState("");
   const [clarification, setClarification] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -82,7 +84,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
     setPending(true); setError("");
     try {
       const [tabs, stored, active] = await Promise.all([
-        collectTabs(), chrome.storage.local.get<{ "approved-memory"?: MemoryItem[] }>("approved-memory"),
+        collectTabs(query.trim()), chrome.storage.local.get<{ "approved-memory"?: MemoryItem[] }>("approved-memory"),
         chrome.storage.local.get<{ "active-session"?: string }>("active-session")
       ]);
       const context = makePayload(field, query.trim(), tabs, stored["approved-memory"] ?? []);
@@ -101,10 +103,10 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       const parsed = AssistResponseSchema.parse(await response.json());
       setResult(parsed);
       if (parsed.status === "complete") {
-        setAnswer(parsed.answer);
+        setRefinedPrompt(parsed.refinedPrompt);
         void fetch(`${API_URL}/api/memory-suggestions`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: context.query, answer: parsed.answer })
+          body: JSON.stringify({ query: context.query, answer: parsed.refinedPrompt })
         }).then((memoryResponse) => memoryResponse.ok ? memoryResponse.json() : { suggestions: [] })
           .then((memoryResult: { suggestions?: string[] }) => setMemorySuggestions((memoryResult.suggestions ?? []).slice(0, 2)))
           .catch(() => undefined);
@@ -121,7 +123,7 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       id: crypto.randomUUID(), title: filter.intent.slice(0, 80) || "Research session", goal: filter.intent,
       createdAt: now, updatedAt: now,
       sources: result.sources.filter((source) => source.url).map((source) => ({ title: source.title, url: source.url!, tabId: source.tabId })),
-      findings: [answer.slice(0, 2_000)], contradictions: filter.conflicts.map((item) => item.description),
+      findings: [refinedPrompt.slice(0, 2_000)], contradictions: filter.conflicts.map((item) => item.description),
       unknowns: filter.missingInformation, nextSteps: []
     };
     await saveSession(session);
@@ -142,16 +144,16 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
       <div className="question">{clarificationQuestion}</div>
       <textarea value={clarification} onChange={(event) => setClarification(event.target.value)} placeholder="Your answer" />
       <button className="primary" disabled={pending || !clarification.trim()} onClick={() => submit(clarification.trim())}>{pending ? "Working…" : "Continue"}</button>
-    </> : !answer ? <>
+    </> : !refinedPrompt ? <>
       <textarea ref={composerRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What would you like help with?" />
-      <div className="hint">Uses this page and related open tabs when you submit.</div>
-      <button className="primary" disabled={pending} onClick={() => submit()}>{pending ? "Finding context…" : "Improve"}</button>
+      <div className="hint">When you submit, uses this page and up to 8 relevant open tabs (including group names) to rewrite your prompt. Page text is read only then.</div>
+      <button className="primary" disabled={pending} onClick={() => submit()}>{pending ? "Refining prompt…" : "Refine prompt"}</button>
     </> : <>
-      <div className="answer">{answer}</div>
+      <div className="answer"><strong>Refined prompt</strong><br />{refinedPrompt}</div>
       {result?.status === "complete" && result.sources.length > 0 && <div className="sources"><strong>Sources</strong>{result.sources.map((source) => source.url && <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title || source.url}</a>)}</div>}
       <div className="actions">
-        <button onClick={() => { insertText(field, answer); close(); }}>Insert</button>
-        <button onClick={() => { insertText(field, answer, true); close(); }}>Replace field</button>
+        <button onClick={() => { insertText(field, refinedPrompt); close(); }}>Insert refined prompt</button>
+        <button onClick={() => { insertText(field, refinedPrompt, true); close(); }}>Replace field</button>
         <button onClick={saveResearchSession} disabled={sessionSaved}>{sessionSaved ? "Session saved" : "Save session"}</button>
       </div>
       {memorySuggestions.map((suggestion) => <button className="memory" key={suggestion} onClick={() => approveMemory(suggestion)}>Remember: {suggestion} ＋</button>)}

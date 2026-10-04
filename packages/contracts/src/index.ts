@@ -10,7 +10,7 @@ export type MemoryItem = z.infer<typeof MemoryItemSchema>;
 export const ContextSourceSchema = z.object({
   id: z.string(), kind: z.enum(["selection", "field", "page", "tab", "memory", "clarification", "session"]),
   title: z.string().optional(), url: z.string().url().optional(), text: z.string().max(40_000).optional(),
-  tabGroupId: z.number().optional(), tabId: z.number().optional(), capturedAt: z.string()
+  tabGroupId: z.number().optional(), tabGroupTitle: z.string().max(200).optional(), tabId: z.number().optional(), capturedAt: z.string()
 });
 
 export const ContextPayloadSchema = z.object({
@@ -46,9 +46,9 @@ export const AssistRequestSchema = z.object({ context: ContextPayloadSchema, cla
 export const AssistResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("clarification_required"), filter: FilterResponseSchema }),
   z.object({
-    status: z.literal("complete"), filter: FilterResponseSchema, answer: z.string(),
+    status: z.literal("complete"), filter: FilterResponseSchema, refinedPrompt: z.string(),
     sources: z.array(z.object({ id: z.string(), title: z.string().optional(), url: z.string().url().optional(), tabId: z.number().optional() })),
-    verification: VerificationResultSchema, memorySuggestions: z.array(z.string()).max(2).optional()
+    memorySuggestions: z.array(z.string()).max(2).optional()
   })
 ]);
 export type AssistResponse = z.infer<typeof AssistResponseSchema>;

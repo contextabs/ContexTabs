@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { AssistRequestSchema, ContextPayloadSchema, ExecutionRequestSchema, FilterResponseSchema, VerificationResultSchema } from "@ambient/contracts";
-import { executeRequest, extractMemory, filterContext, verifyAnswer } from "@ambient/llm";
+import { AssistRequestSchema, ContextPayloadSchema, FilterResponseSchema } from "@ambient/contracts";
+import { extractMemory, filterContext } from "@ambient/llm";
 
 export async function registerAssistRoutes(app: FastifyInstance) {
   app.post("/api/assist", async (request, reply) => {
@@ -13,17 +13,7 @@ export async function registerAssistRoutes(app: FastifyInstance) {
         return { status: "clarification_required", filter };
       }
       const sources = context.sources.filter((source) => filter.selectedSourceIds.includes(source.id)).map(({ id, title, url, tabId }) => ({ id, title, url, tabId }));
-      const execution = ExecutionRequestSchema.parse({
-        requestId: context.requestId, optimizedPrompt: filter.optimizedPrompt, filteredContext: filter.filteredContext,
-        sources, preferences: context.preferences.filter((item) => item.status === "approved"), clarificationAnswer
-      });
-      let answer = await executeRequest(execution);
-      let verification = VerificationResultSchema.parse(await verifyAnswer({ requestId: context.requestId, intent: filter.intent, prompt: filter.optimizedPrompt, context: filter.filteredContext, answer }));
-      if (!verification.passed && verification.correctionPrompt) {
-        answer = await executeRequest({ ...execution, correctionFeedback: verification.correctionPrompt });
-        verification = VerificationResultSchema.parse(await verifyAnswer({ requestId: context.requestId, intent: filter.intent, prompt: filter.optimizedPrompt, context: filter.filteredContext, answer }));
-      }
-      return { status: "complete", filter, answer, sources, verification };
+      return { status: "complete", filter, refinedPrompt: filter.optimizedPrompt, sources };
     } catch (error) {
       request.log.error(error);
       return reply.code(502).send({ error: "The AI service could not complete the request. Please retry." });

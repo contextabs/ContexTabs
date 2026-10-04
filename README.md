@@ -37,10 +37,11 @@ If pnpm reports ignored native build scripts, review `pnpm approve-builds` and a
 
 - Detects text inputs, textareas, and contenteditable elements locally.
 - Shows a small Grammarly-style button beside the focused editable field.
-- Sends the request only after the user opens the widget and presses **Improve**.
-- Captures the active page's readable text and open-tab titles/URLs on that explicit action.
-- Asks at most one clarification question, evaluates the answer, and performs at most one correction pass.
+- Sends the request only after the user opens the widget and presses **Refine prompt**.
+- Rewrites the user's intent into a stronger prompt and inserts that refined prompt into the field; the MVP does not answer or execute the request.
+- On that explicit action, reads the active page plus readable text from up to 8 relevant open tabs; it considers tab titles, URLs, recency, and (when permitted) tab group names.
+- Uses that evidence to enrich a prompt for a downstream LLM; it asks at most one clarification question and never answers or executes the original task.
 - Stores saved research sessions and approved preferences in extension-local storage.
-- This MVP never moves tabs; grouping is a later enhancement.
+- Tab grouping is available only as an explicit action from a saved research session.
 
 The API endpoint is unauthenticated for a local hackathon demo. Do not expose it publicly without adding authentication or a per-user token and abuse controls.
