@@ -37,8 +37,9 @@ If pnpm reports ignored native build scripts, review `pnpm approve-builds` and a
 
 - Detects text inputs, textareas, and contenteditable elements locally.
 - Shows a small Grammarly-style button beside the focused editable field.
-- Sends the request only after the user opens the widget and presses **Refine prompt**.
+- Starts a request after an explicit manual click, or automatically after a completion signal in supported AI chat fields.
 - Rewrites the user's intent into a stronger prompt and inserts that refined prompt into the field; the MVP does not answer or execute the request.
+- On ChatGPT, Gemini, and Claude prompt fields, starts refinement after a short typing pause and shows a compact comparison only when the rewrite is materially useful. Further typing cancels the pending suggestion.
 - On that explicit action, reads the active page plus readable text from up to 8 relevant open tabs; it considers tab titles, URLs, recency, and (when permitted) tab group names.
 - Uses that evidence to enrich a prompt for a downstream LLM; it asks at most one clarification question and never answers or executes the original task.
 - Stores saved research sessions and approved preferences in extension-local storage.
