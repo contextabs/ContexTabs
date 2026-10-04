@@ -1,6 +1,7 @@
 import type { MemoryItem, ResearchSession } from "@ambient/contracts";
 
 export async function saveSession(session: ResearchSession) { await chrome.runtime.sendMessage({ type: "SAVE_SESSION", session }); }
+export async function deleteSession(id: string) { await chrome.runtime.sendMessage({ type: "DELETE_SESSION", id }); }
 export async function listSessions(): Promise<ResearchSession[]> { return chrome.runtime.sendMessage({ type: "LIST_SESSIONS" }); }
 export async function getSession(id: string): Promise<ResearchSession | undefined> { return chrome.runtime.sendMessage({ type: "GET_SESSION", id }); }
 

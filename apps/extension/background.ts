@@ -2,6 +2,7 @@ export {};
 
 import { openDB } from "idb";
 import { OrganizeWindowResponseSchema, ResearchSessionSchema, SemanticTabClusterSchema, type SemanticTabCluster } from "@ambient/contracts";
+import { buildClusterSummary, inferClusterName, pickBestClusterMatch, shouldSurfaceClusterSuggestion } from "./lib/cluster-utils";
 
 const dbPromise = openDB("ambient-context", 1, {
   upgrade(db) { if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" }); }
@@ -70,16 +71,33 @@ async function rebuildClusters(windowId?: number) {
     const counts = new Map<string, number>(); words.forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));
     const common = [...counts].filter(([, count]) => count >= Math.max(2, Math.ceil(members.length * 0.4))).sort((a, b) => b[1] - a[1]).map(([word]) => word).slice(0, 8);
     const category = classificationCache[`${members[0].url}|${members[0].title}`]?.category ?? tabCategory(members[0].domain, members.map((tab) => tab.title).join(" "));
-    const cachedName = members.map((tab) => classificationCache[classificationKey(tab)]?.topic).find(Boolean);
-    const name = cachedName || common.slice(0, 3).map((word) => word[0].toUpperCase() + word.slice(1)).join(" ") || `${category[0].toUpperCase()}${category.slice(1)} research`;
+    const cachedTopicNames = members.map((tab) => classificationCache[classificationKey(tab)]?.topic).filter((topic): topic is string => Boolean(topic && topic.trim()));
+    const generatedName = inferClusterName(members.map((tab) => ({
+      title: tab.title,
+      url: tab.url,
+      domain: tab.domain,
+      topic: classificationCache[classificationKey(tab)]?.topic,
+      summary: classificationCache[classificationKey(tab)]?.topic
+    })), `${category[0].toUpperCase()}${category.slice(1)} research`);
+    const name = cachedTopicNames[0] ? cachedTopicNames[0] : generatedName;
     const prior = old.filter((cluster) => cluster.windowId === currentWindowId && !usedClusterIds.has(cluster.id)).map((cluster) => ({ cluster, overlap: cluster.tabIds.filter((id) => members.some((tab) => tab.tabId === id)).length })).sort((a, b) => b.overlap - a.overlap)[0];
-    const id = prior && prior.overlap ? prior.cluster.id : `cluster-${currentWindowId}-${crypto.randomUUID()}`;
+    const match = pickBestClusterMatch(
+      old.filter((cluster) => cluster.windowId === currentWindowId && !usedClusterIds.has(cluster.id)),
+      members.map((tab) => ({ title: tab.title, url: tab.url, domain: tab.domain, topic: classificationCache[classificationKey(tab)]?.topic }))
+    );
+    const id = (match && match.score >= 2) ? match.cluster.id : (prior && prior.overlap ? prior.cluster.id : `cluster-${currentWindowId}-${crypto.randomUUID()}`);
     usedClusterIds.add(id);
     const confidence = Math.min(0.98, 0.45 + members.length * 0.08 + (members.every((tab) => tab.groupId !== undefined) ? 0.15 : 0) + Math.min(common.length, 4) * 0.04);
-    const status = prior?.cluster.status === "confirmed" ? "confirmed" : members.length >= 2 ? "suggested" : "tentative";
-    const updated: SemanticTabCluster = { id, windowId: currentWindowId, name: prior?.cluster.name ?? name, category, tabIds: members.map((tab) => tab.tabId), members: members.map((tab) => ({ tabId: tab.tabId, title: tab.title.slice(0, 300), url: tab.url })), confidence, tokens: common, summary: `${members.length} related tabs: ${members.map((tab) => tab.title).slice(0, 4).join(" · ")}`.slice(0, 1_000), lastActiveAt: new Date(Math.max(...members.map((tab) => tab.lastActiveAt))).toISOString(), status, dismissedUntil: prior?.cluster.dismissedUntil, chromeGroupId: members.every((tab) => tab.groupId === members[0].groupId) ? members[0].groupId : undefined };
+    const status = (match?.cluster.status ?? prior?.cluster.status) === "confirmed" ? "confirmed" : members.length >= 2 ? "suggested" : "tentative";
+    const summary = buildClusterSummary(members.map((tab) => ({
+      title: tab.title,
+      url: tab.url,
+      domain: tab.domain,
+      topic: classificationCache[classificationKey(tab)]?.topic
+    })), match?.cluster.name ?? name); 
+    const updated: SemanticTabCluster = { id, windowId: currentWindowId, name: match?.cluster.name ?? prior?.cluster.name ?? name, category, tabIds: members.map((tab) => tab.tabId), members: members.map((tab) => ({ tabId: tab.tabId, title: tab.title.slice(0, 300), url: tab.url })), confidence, tokens: common, summary: summary.slice(0, 1_000), lastActiveAt: new Date(Math.max(...members.map((tab) => tab.lastActiveAt))).toISOString(), status, dismissedUntil: match?.cluster.dismissedUntil ?? prior?.cluster.dismissedUntil, chromeGroupId: members.every((tab) => tab.groupId === members[0].groupId) ? members[0].groupId : undefined };
     clusters.push(updated);
-    if (members.length >= 2 && status !== "confirmed" && (!prior?.cluster.dismissedUntil || Date.parse(prior.cluster.dismissedUntil) < now)) {
+    if (members.length >= 2 && confidence >= 0.58 && shouldSurfaceClusterSuggestion({ id, name, status, confidence, tabIds: members.map((tab) => tab.tabId), tokens: common }) && (!prior?.cluster.dismissedUntil || Date.parse(prior.cluster.dismissedUntil) < now)) {
       const [suppress, disabled] = await Promise.all([chrome.storage.local.get<{ "suggested-cluster"?: string }>("suggested-cluster"), chrome.storage.local.get<{ "disabled-suggestion-category"?: string }>("disabled-suggestion-category")]);
       if (!suppress["suggested-cluster"] && disabled["disabled-suggestion-category"] !== category) await chrome.storage.local.set({ "suggested-cluster": id });
     }
@@ -139,7 +157,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "GET_CLUSTER_SUGGESTION": {
         const { "suggested-cluster": id } = await chrome.storage.local.get<{ "suggested-cluster"?: string }>("suggested-cluster");
         const cluster = id ? (await getClusters()).find((item) => item.id === id) : undefined;
-        return cluster && (!cluster.dismissedUntil || Date.parse(cluster.dismissedUntil) < Date.now()) ? cluster : undefined;
+        return cluster && shouldSurfaceClusterSuggestion({ id: cluster.id, name: cluster.name, status: cluster.status, confidence: cluster.confidence, tabIds: cluster.tabIds, tokens: cluster.tokens }) && (!cluster.dismissedUntil || Date.parse(cluster.dismissedUntil) < Date.now()) ? cluster : undefined;
       }
       case "LIST_CLUSTERS": {
         const windowId = Number(message.windowId);
@@ -187,7 +205,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         else if (message.action === "create-session") {
           const openTabs = await chrome.tabs.query({ windowId: cluster.windowId });
           const db = await dbPromise; const now = new Date().toISOString();
-          const session = ResearchSessionSchema.parse({ id: `research-${cluster.id}`, title: cluster.name, goal: `Research ${cluster.name}`, createdAt: now, updatedAt: now, clusterId: cluster.id, summary: cluster.summary, entities: cluster.tokens, constraints: [], confirmed: true, sources: openTabs.filter((tab) => cluster.tabIds.includes(tab.id!)).map((tab) => ({ title: tab.title, url: tab.url!, tabId: tab.id })), findings: [], contradictions: [], unknowns: [], nextSteps: [] });
+          const sessionGoal = cluster.summary ? `Research ${cluster.name}: ${cluster.summary}` : `Research ${cluster.name}`;
+          const strongTokens = cluster.tokens.slice(0, 3);
+          const findings = cluster.summary ? [cluster.summary] : [
+            `The topic cluster is centered on ${cluster.name}.`,
+            `Review the related tabs to confirm the most relevant sources.`,
+          ];
+          const nextSteps = [
+            `Compare the strongest source pages in ${cluster.name}.`,
+            strongTokens.length ? `Validate whether ${strongTokens.join(", ")} is the right framing for this research question.` : `Capture a final decision or conclusion about this research topic.`
+          ];
+          const session = ResearchSessionSchema.parse({ id: `research-${cluster.id}`, title: cluster.name, goal: sessionGoal, createdAt: now, updatedAt: now, clusterId: cluster.id, summary: cluster.summary, entities: cluster.tokens, constraints: [], confirmed: true, sources: openTabs.filter((tab) => cluster.tabIds.includes(tab.id!)).map((tab) => ({ title: tab.title, url: tab.url!, tabId: tab.id })), findings, contradictions: [], unknowns: strongTokens.length ? strongTokens.map((token) => `Need to confirm whether "${token}" is the right framing for this topic.`) : ["Need to confirm the core question this research topic is answering."], nextSteps });
           await db.put("sessions", session);
         }
         await saveClusters(clusters); await chrome.storage.local.remove("suggested-cluster"); scheduleClustering(); return true;
@@ -278,6 +306,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "SAVE_SESSION": {
         const session = ResearchSessionSchema.parse(message.session);
         await (await dbPromise).put("sessions", session);
+        return true;
+      }
+      case "DELETE_SESSION": {
+        const id = String(message.id ?? "");
+        if (!id) throw new Error("No session ID was supplied");
+        await (await dbPromise).delete("sessions", id);
+        const { "active-session": activeId } = await chrome.storage.local.get<{ "active-session"?: string }>("active-session");
+        if (activeId === id) await chrome.storage.local.remove("active-session");
         return true;
       }
       case "GROUP_TABS": {
