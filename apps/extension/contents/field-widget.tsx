@@ -51,6 +51,7 @@ function makePayload(field: Editable, query: string, tabs: ContextTab[], memory:
     ? field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0).trim() || undefined
     : window.getSelection()?.toString().trim() || undefined;
   const sources: ContextPayload["sources"] = [
+    // prioritize the user's input field so it's seen first by the LLM
     { id: "field", kind: "field", text: readField(field).slice(0, 8_000), capturedAt },
     { id: "active-page", kind: "page", title: document.title, url: location.href, text: (main?.innerText ?? "").slice(0, 14_000), capturedAt },
     ...tabs.filter((tab) => tab.url && tab.title && /^https?:\/\//.test(tab.url)).slice(0, 8).map((tab, index) => ({
@@ -109,10 +110,19 @@ function Widget({ field, close }: { field: Editable; close: () => void }) {
     const controller = new AbortController(); requestRef.current = controller;
     setDraft(query); setResult(null); setState("working");
     try {
-      const [tabs, stored, active] = await Promise.all([
-        collectTabs(query), chrome.storage.local.get<{ "approved-memory"?: MemoryItem[] }>("approved-memory"),
-        chrome.storage.local.get<{ "active-session"?: string }>("active-session")
-      ]);
+      const tabsPromise = collectTabs(query);
+      const storedPromise = chrome.storage.local.get<{ "approved-memory"?: MemoryItem[] }>("approved-memory");
+      const activePromise = chrome.storage.local.get<{ "active-session"?: string }>("active-session");
+      let tabs: ContextTab[] = [];
+      try {
+        tabs = await Promise.race([
+          tabsPromise,
+          new Promise<ContextTab[]>((res) => setTimeout(() => res([]), 400))
+        ]);
+      } catch {
+        tabs = [];
+      }
+      const [stored, active] = await Promise.all([storedPromise, activePromise]);
       if (version !== versionRef.current) return;
       const context = makePayload(field, query, tabs, stored["approved-memory"] ?? []);
       const session = active["active-session"] ? await getSession(active["active-session"]) : undefined;
