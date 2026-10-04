@@ -39,8 +39,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return score(b) - score(a) || (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0);
         });
 
-        const selected = candidates.slice(0, 8);
-        const results = await Promise.all(selected.map(async (tab) => {
+        // gather headings from the active page to improve shortlisting relevance
+        let activeHeadingsText = "";
+        try {
+          if (activeTab?.id !== undefined) {
+            const extractedActive = await chrome.scripting.executeScript({
+              target: { tabId: activeTab.id },
+              func: () => {
+                const elems = Array.from(document.querySelectorAll("h1,h2,h3"));
+                return elems.map((e) => e.innerText ?? "").join(" ").replace(/\n{3,}/g, " ").slice(0, 2000);
+              }
+            });
+            activeHeadingsText = String(extractedActive[0]?.result ?? "").toLowerCase();
+          }
+        } catch { /* ignore failures reading active page headings */ }
+
+        const headingWords = activeHeadingsText.match(/[a-z0-9]{3,}/g) ?? [];
+
+        // compute a relevance score and require at least one signal (prompt words, active headings, or same group)
+        const scoreFor = (tab: chrome.tabs.Tab) => {
+          const haystack = `${tab.title ?? ""} ${tab.url ?? ""} ${groups.get(tab.groupId) ?? ""}`.toLowerCase();
+          const lexical = words.reduce((sum, word) => sum + (haystack.includes(word) ? 2 : 0), 0);
+          const headingsMatch = headingWords.reduce((sum, w) => sum + (haystack.includes(w) ? 1 : 0), 0);
+          const sameGroup = activeTab?.groupId !== undefined && activeTab.groupId >= 0 && tab.groupId === activeTab.groupId ? 5 : 0;
+          return lexical + headingsMatch + sameGroup;
+        };
+
+        const shortlisted = candidates
+          .filter((tab) => scoreFor(tab) > 0) // drop tabs with no relevance signal
+          .sort((a, b) => scoreFor(b) - scoreFor(a) || (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))
+          .slice(0, 2); // cap to at most two tabs for low-latency scraping
+
+        const results = await Promise.all(shortlisted.map(async (tab) => {
           let text = "";
           try {
             const extracted = await chrome.scripting.executeScript({
